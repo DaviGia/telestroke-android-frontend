@@ -7,7 +7,7 @@ Android frontend.
 The application needs a single configuration file in `res/raw/config.json`.
 An example of configuration is the following:
 
-``` json
+``` js
 {
   "peerjs": {
     "host": "localhost",
