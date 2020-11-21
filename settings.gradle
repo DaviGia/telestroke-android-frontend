@@ -1,0 +1,2 @@
+include ':webrtc', ':app'
+rootProject.name='android-webrtc'

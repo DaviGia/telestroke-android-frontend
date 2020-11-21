@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">Telestroke</string>
+    <string name="permissions_rationale_message">This application enables the user to make audio or video call remotely. As such, it needs to access to camera, microphone and internet connection in order to function correctly.</string>
+    <string name="permissions_rationale_title">Permissions explanation</string>
+    <string name="missing_permissions_title">Permissions error</string>
+    <string name="missing_permissions_message">This application requires all permissions to be granted in order to work properly.</string>
+    <string name="input_dialog_hint">Peer id</string>
+    <string name="status_message_initializing_client">Initializing client…</string>
+    <string name="message_status_connect_to_server">Connecting to server…</string>
+    <string name="message_status_subscribing_device">Subscribing device…</string>
+    <string name="message_status_wait_incoming_request">Waiting for incoming call…</string>
+    <string name="alert_title_peerjs_server_max_attempts_reached">Signalling server unavailable</string>
+    <string name="alert_message_peerjs_server_max_attempts_reached">The maximum number of reconnection has been reached. The application will be closed…</string>
+    <string name="alert_title_server_unavailable">Server unavailable</string>
+    <string name="alert_message_server_unavailable">The application cannot receive any request without subscription. The application will be closed…</string>
+    <string name="alert_title_camera_not_found">Camera device not found</string>
+    <string name="alert_message_camera_not_found">The device does not have any camera device. The application will be closed…</string>
+    <string name="step_icon_description">Icon linked to the step</string>
+</resources>

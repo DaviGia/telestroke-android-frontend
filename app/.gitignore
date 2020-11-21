@@ -1,0 +1,7 @@
+/build
+
+# ignore specific config
+/src/main/res/raw/config.json
+
+# ignore certificates
+/src/main/res/raw/*.pem
