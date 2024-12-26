@@ -32,10 +32,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -110,7 +111,7 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
     /**
      * The outgoing channel, it's the send channel where messages can be put in order to send them.
      */
-    private val outgoingChannel = MutableSharedFlow<String>()
+    private val outgoingChannel = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = Int.MAX_VALUE)
 
     /**
      * Initializes the http client with all required features.
@@ -257,25 +258,22 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
                     //schedule heartbeat
                     val heartBeatJob = scheduleHeartbeat()
                     try {
-                        while (isActive && !shouldClose) {
-                            //send data
-                            outgoingChannel.first().let {
-                                Log.v(TAG, "[$guid] Sending: $it")
-                                outgoing.send(Frame.Text(it))
-                            }
+                        //send data
+                        outgoingChannel.onEach {
+                            Log.v(TAG, "[$guid] Sending: $it")
+                            outgoing.send(Frame.Text(it))
+                        }.launchIn(this)
 
-                            //get incoming data
-                            incoming.tryReceive().getOrNull()?.let { frame ->
-                                when(frame) {
-                                    is Frame.Text -> {
-                                        withContext(Dispatchers.Main) {
-                                            Log.v(TAG, "[$guid] Received message: ${frame.readText()}")
-                                            handleMessage(frame.readText())
-                                        }
+                        incoming.consumeEach { frame ->
+                            when(frame) {
+                                is Frame.Text -> {
+                                    withContext(Dispatchers.Main) {
+                                        Log.v(TAG, "[$guid] Received message: ${frame.readText()}")
+                                        handleMessage(frame.readText())
                                     }
-                                    is Frame.Binary -> Log.d(TAG, "[$guid] Received binary data: $frame")
-                                    else -> Log.d(TAG, "[$guid] Received unsupported frame from websocket (${frame.frameType})")
                                 }
+                                is Frame.Binary -> Log.d(TAG, "[$guid] Received binary data: $frame")
+                                else -> Log.d(TAG, "[$guid] Received unsupported frame from websocket (${frame.frameType})")
                             }
                         }
                     } catch (e: ClosedReceiveChannelException) {
@@ -318,7 +316,11 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
      */
     private fun send(data: Any) = runBlocking {
         Log.v(TAG, "Sending message...")
-        outgoingChannel.tryEmit(serializer.toJson(data))
+        val response = outgoingChannel.tryEmit(serializer.toJson(data))
+
+        if (!response) {
+            Log.e(TAG, "Failed to send message")
+        }
     }
 
     /**
