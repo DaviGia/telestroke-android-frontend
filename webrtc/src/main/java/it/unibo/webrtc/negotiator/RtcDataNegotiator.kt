@@ -56,7 +56,7 @@ class RtcDataNegotiator(override val connectionManager: WebRtcManager)
         Log.d(TAG, "Received newly opened exchange channel: ${channel.id}")
 
         try {
-            if (!exchangesChannel.offer(channel)) {
+            if (!exchangesChannel.trySend(channel).isSuccess) {
                 Log.e(TAG, "Unable to offer exchange channel to receive channel")
             }
         } catch (e: Throwable) {

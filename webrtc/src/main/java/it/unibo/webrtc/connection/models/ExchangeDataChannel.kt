@@ -2,6 +2,7 @@ package it.unibo.webrtc.connection.models
 
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.SendChannel
+import kotlinx.coroutines.channels.trySendBlocking
 
 /**
  * The exchange data channel.
@@ -12,7 +13,7 @@ import kotlinx.coroutines.channels.SendChannel
 class ExchangeDataChannel(override val id: Int, private val inbound: ReceiveChannel<String>, private val outgoing: SendChannel<String>)
     : ExchangeChannel {
 
-    override fun send(data: String): Boolean = outgoing.offer(data)
+    override fun send(data: String): Boolean = outgoing.trySend(data).isSuccess
 
     override fun receive(): ReceiveChannel<String> = inbound
 }

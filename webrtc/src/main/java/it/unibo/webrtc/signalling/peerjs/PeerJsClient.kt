@@ -3,32 +3,46 @@ package it.unibo.webrtc.signalling.peerjs
 import android.util.Log
 import com.google.gson.Gson
 import io.ktor.client.HttpClient
+import io.ktor.client.call.body
 import io.ktor.client.engine.okhttp.OkHttp
-import io.ktor.client.features.json.GsonSerializer
-import io.ktor.client.features.json.JsonFeature
-import io.ktor.client.features.websocket.WebSockets
-import io.ktor.client.features.websocket.webSocket
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.request.url
 import io.ktor.http.HttpMethod
-import io.ktor.http.cio.websocket.Frame
-import io.ktor.http.cio.websocket.readText
-import io.ktor.util.KtorExperimentalAPI
+import io.ktor.serialization.gson.gson
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
 import it.unibo.webrtc.signalling.SignallingClient
 import it.unibo.webrtc.signalling.observers.SignallingClientListener
 import it.unibo.webrtc.signalling.peerjs.enums.ConnectionType
 import it.unibo.webrtc.signalling.peerjs.enums.SerializationType
 import it.unibo.webrtc.signalling.peerjs.enums.ServerMessageType
-import it.unibo.webrtc.signalling.peerjs.models.*
+import it.unibo.webrtc.signalling.peerjs.models.Candidate
+import it.unibo.webrtc.signalling.peerjs.models.ConnectionInfo
+import it.unibo.webrtc.signalling.peerjs.models.DataOfferOptions
+import it.unibo.webrtc.signalling.peerjs.models.Offer
+import it.unibo.webrtc.signalling.peerjs.models.PeerJsConfig
+import it.unibo.webrtc.signalling.peerjs.models.ServerMessage
 import it.unibo.webrtc.signalling.peerjs.util.randomToken
-import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.BroadcastChannel
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.webrtc.IceCandidate
 import org.webrtc.SessionDescription
-import java.util.*
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeoutException
 import kotlin.coroutines.Continuation
@@ -39,8 +53,6 @@ import kotlin.coroutines.suspendCoroutine
  * @param options The PeerJs options.
  * @param listener The signalling client listener.
  */
-@KtorExperimentalAPI
-@ExperimentalCoroutinesApi
 class PeerJsClient(private val options: PeerJsConfig, private val listener: SignallingClientListener)
     : CoroutineScope, SignallingClient {
 
@@ -93,20 +105,20 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
     /**
      * Initialize gson instance.
      */
-    private val gson = Gson()
+    private val serializer = Gson()
 
     /**
      * The outgoing channel, it's the send channel where messages can be put in order to send them.
      */
-    private val outgoingChannel = BroadcastChannel<String>(Channel.BUFFERED)
+    private val outgoingChannel = MutableSharedFlow<String>()
 
     /**
      * Initializes the http client with all required features.
      */
     private val client = HttpClient(OkHttp) {
         install(WebSockets)
-        install(JsonFeature) {
-            serializer = GsonSerializer()
+        install(ContentNegotiation) {
+            gson()
         }
     }
 
@@ -153,7 +165,7 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
 
         val connInfo = getConnectionInfo(connectionId)
         connInfo?.let {
-            val payload = gson.toJsonTree(Offer.buildOffer(description, connInfo.type, connInfo.id)).asJsonObject
+            val payload = serializer.toJsonTree(Offer.buildOffer(description, connInfo.type, connInfo.id)).asJsonObject
             send(ServerMessage(ServerMessageType.Answer, payload, currentId, connInfo.peerId))
         } ?: run {
             Log.d(TAG, "Unable to reply because the connection was not found")
@@ -166,7 +178,7 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
 
         val connInfo = getConnectionInfo(connectionId)
         connInfo?.let {
-            val payload = gson.toJsonTree(Candidate.buildCandidate(candidate, connInfo.type, connInfo.id)).asJsonObject
+            val payload = serializer.toJsonTree(Candidate.buildCandidate(candidate, connInfo.type, connInfo.id)).asJsonObject
             send(ServerMessage(ServerMessageType.Candidate, payload, currentId, connInfo.peerId))
         } ?: run {
             Log.d(TAG, "Unable to reply because the connection was not found")
@@ -206,7 +218,7 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
                 //ensure that the server replied with on
                 val firstFrame = incoming.receive()
                 if (firstFrame is Frame.Text) {
-                    val firstMessage = gson.fromJson(firstFrame.readText(), ServerMessage::class.java)
+                    val firstMessage = serializer.fromJson(firstFrame.readText(), ServerMessage::class.java)
                     val cause: String? = when (firstMessage.type) {
                         ServerMessageType.Open -> null
                         ServerMessageType.Error -> firstMessage.payload?.get("msg")?.toString() ?: "unknown"
@@ -242,22 +254,18 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
                 }
 
                 if (isConnected) {
-
-                    //create subscription for outgoing channel in order to retrieve messages to send
-                    val outgoingData = outgoingChannel.openSubscription()
-
                     //schedule heartbeat
                     val heartBeatJob = scheduleHeartbeat()
                     try {
                         while (isActive && !shouldClose) {
                             //send data
-                            outgoingData.poll()?.let {
+                            outgoingChannel.first().let {
                                 Log.v(TAG, "[$guid] Sending: $it")
                                 outgoing.send(Frame.Text(it))
                             }
 
                             //get incoming data
-                            incoming.poll()?.let { frame ->
+                            incoming.tryReceive().getOrNull()?.let { frame ->
                                 when(frame) {
                                     is Frame.Text -> {
                                         withContext(Dispatchers.Main) {
@@ -282,8 +290,6 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
                         currentId = null
                         //cancel heartbeat
                         heartBeatJob.cancel()
-                        //ensure to clear the outgoing channel
-                        outgoingData.cancel()
                         //clear pending offers
                         pendingOffers.clear()
                         //clear connections
@@ -312,7 +318,7 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
      */
     private fun send(data: Any) = runBlocking {
         Log.v(TAG, "Sending message...")
-        outgoingChannel.send(gson.toJson(data))
+        outgoingChannel.tryEmit(serializer.toJson(data))
     }
 
     /**
@@ -334,11 +340,11 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
         //immediately save peer and connection identifiers (ICE handshaking requires the peer to send candidates)
         saveConnection(peerId, connectionId, type)
 
-        val offer = gson.toJsonTree(Offer.buildOffer(description, type, connectionId)).asJsonObject
+        val offer = serializer.toJsonTree(Offer.buildOffer(description, type, connectionId)).asJsonObject
 
         //force json serialization
         if (type == ConnectionType.Data) {
-            val extra = gson.toJsonTree(DataOfferOptions()).asJsonObject
+            val extra = serializer.toJsonTree(DataOfferOptions()).asJsonObject
 
             //merge
             extra.entrySet().forEach {
@@ -378,7 +384,7 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
     private fun handleMessage(data: String) {
         Log.v(TAG, "Received: $data")
 
-        val message = gson.fromJson(data, ServerMessage::class.java)
+        val message = serializer.fromJson(data, ServerMessage::class.java)
         when(message.type) {
             ServerMessageType.Candidate -> handleCandidate(message) //new ice candidate (peer)
             ServerMessageType.Offer -> handleOffer(message)  // we should consider switching this to CALL/CONNECT, but this is the least breaking option.
@@ -399,13 +405,13 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
 
         try {
             val peerId = offer.src!!
-            val payload = gson.fromJson(offer.payload, Offer::class.java)
+            val payload = serializer.fromJson(offer.payload, Offer::class.java)
             val connectionId = payload.connectionId
 
             //check serialization
             if (payload.type == ConnectionType.Data) {
                 val extra = offer.payload?.let {
-                    gson.fromJson(it, DataOfferOptions::class.java)
+                    serializer.fromJson(it, DataOfferOptions::class.java)
                 } ?: DataOfferOptions(serialization = SerializationType.Binary)
 
                 if (extra.serialization != SerializationType.JSON) {
@@ -435,7 +441,7 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
 
         try {
             val peerId = answer.src!!
-            val payload = gson.fromJson(answer.payload, Offer::class.java)
+            val payload = serializer.fromJson(answer.payload, Offer::class.java)
             val connectionId = payload.connectionId
 
             payload.getSessionDescription()?.let {
@@ -461,7 +467,7 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
 
         try {
             val peerId = candidate.src!!
-            val payload = gson.fromJson(candidate.payload, Candidate::class.java)
+            val payload = serializer.fromJson(candidate.payload, Candidate::class.java)
             val connectionId = payload.connectionId
 
             if (!connectionExists(peerId, connectionId)) {
@@ -486,7 +492,7 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
 
         val heartbeatMessage = ServerMessage(ServerMessageType.Heartbeat)
 
-        while (isConnected && !outgoingChannel.isClosedForSend) {
+        while (isConnected) {
             try {
                 delay(period)
                 send(heartbeatMessage)
@@ -502,16 +508,19 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
      * Asks to the server for a unique id.
      * @return The unique id.
      */
-    private fun askForUniqueId(): String? = runBlocking {
-        client.get<String>("${options.buildUrl()}/$API_GET_ID_ENDPOINT")
+    private fun askForUniqueId(): String = runBlocking {
+        val response = client.get("${options.buildUrl()}/$API_GET_ID_ENDPOINT")
+        response.body<String>()
     }
 
     override fun getActivePeers(): List<String> = runBlocking {
         if (!connected()) throw IllegalStateException("Not connected to signalling server")
-        client.get<List<String>> {
+
+        val response = client.get {
             url("${options.buildUrl()}/$API_GET_PEERS_ENDPOINT")
             authParams!!.forEach { parameter(it.first, it.second) }
-        }.filter { it != currentId }
+        }
+        response.body<List<String>>().filter { it != currentId }
     }
 
     //endregion
@@ -520,7 +529,6 @@ class PeerJsClient(private val options: PeerJsConfig, private val listener: Sign
     override fun dispose() {
         client.close()
         job.complete()
-        outgoingChannel.close()
         connections.clear()
     }
 

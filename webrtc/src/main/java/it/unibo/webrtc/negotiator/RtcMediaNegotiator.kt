@@ -56,7 +56,7 @@ class RtcMediaNegotiator(override val connectionManager: WebRtcMediaManager): Ab
             s.videoTracks.forEach {
                 try {
                     //offer video track id
-                    if (!streamsChannel.offer(VideoTrackInfo(it.id(), s.id))) {
+                    if (!streamsChannel.trySend(VideoTrackInfo(it.id(), s.id)).isSuccess) {
                         Log.e(TAG, "Unable to offer video track info to receive channel")
                     }
                 } catch (e: Throwable) {

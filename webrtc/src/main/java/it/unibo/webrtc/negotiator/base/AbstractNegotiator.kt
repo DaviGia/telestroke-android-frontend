@@ -3,8 +3,11 @@ package it.unibo.webrtc.negotiator.base
 import android.util.Log
 import it.unibo.webrtc.client.base.WebRtcManager
 import it.unibo.webrtc.connection.base.AbstractConnection
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.webrtc.*
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -33,6 +36,11 @@ abstract class AbstractNegotiator<T: AbstractConnection> : Negotiator<T> {
      * The pending candidates.
      */
     private val pendingCandidates: ConcurrentLinkedQueue<IceCandidate> = ConcurrentLinkedQueue()
+
+    /**
+     * The coroutine scope.
+     */
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     //endregion
 
     //region negotiator
@@ -102,7 +110,7 @@ abstract class AbstractNegotiator<T: AbstractConnection> : Negotiator<T> {
                     Log.d(TAG, "Detected ICE disconnection, closing connection...")
 
                     //NOTE: the close method MUST be done in the main thread
-                    GlobalScope.launch(Dispatchers.Main) { connection.close() }
+                    scope.launch(Dispatchers.Main) { connection.close() }
                 }
                 else -> {}
             }
@@ -139,6 +147,7 @@ abstract class AbstractNegotiator<T: AbstractConnection> : Negotiator<T> {
     //region helpers
     override fun dispose() {
         pendingCandidates.clear()
+        scope.cancel()
     }
 
     /**

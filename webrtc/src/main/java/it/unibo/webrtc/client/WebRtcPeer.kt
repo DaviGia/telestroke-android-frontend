@@ -3,7 +3,6 @@ package it.unibo.webrtc.client
 import android.content.Context
 import android.os.Looper
 import android.util.Log
-import io.ktor.util.KtorExperimentalAPI
 import it.unibo.webrtc.capture.AudioController
 import it.unibo.webrtc.capture.CameraController
 import it.unibo.webrtc.capture.models.MediaOptions
@@ -12,9 +11,9 @@ import it.unibo.webrtc.client.base.WebRtcMediaManager
 import it.unibo.webrtc.client.models.WebRtcOptions
 import it.unibo.webrtc.client.observers.WebRtcEventListener
 import it.unibo.webrtc.common.Disposable
-import it.unibo.webrtc.connection.base.AbstractConnection
 import it.unibo.webrtc.connection.RtcDataConnection
 import it.unibo.webrtc.connection.RtcMediaConnection
+import it.unibo.webrtc.connection.base.AbstractConnection
 import it.unibo.webrtc.connection.base.DataConnection
 import it.unibo.webrtc.connection.base.MediaConnection
 import it.unibo.webrtc.negotiator.RtcDataNegotiator
@@ -26,8 +25,17 @@ import it.unibo.webrtc.signalling.observers.SignallingClientListener
 import it.unibo.webrtc.signalling.peerjs.PeerJsClient
 import it.unibo.webrtc.signalling.peerjs.enums.ConnectionType
 import it.unibo.webrtc.signalling.peerjs.util.randomToken
-import kotlinx.coroutines.*
-import org.webrtc.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import org.webrtc.DataChannel
+import org.webrtc.IceCandidate
+import org.webrtc.MediaConstraints
+import org.webrtc.PeerConnection
+import org.webrtc.SessionDescription
+import org.webrtc.SurfaceViewRenderer
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.suspendCoroutine
 
@@ -39,8 +47,6 @@ import kotlin.coroutines.suspendCoroutine
  * @param options The WebRtcOptions
  * @param listener The WebRtcEventListener
  */
-@KtorExperimentalAPI
-@ExperimentalCoroutinesApi
 class WebRtcPeer(private val context: Context, private val options: WebRtcOptions, private val listener: WebRtcEventListener? = null)
     : WebRtcClient, WebRtcMediaManager, SignallingClientListener, Disposable {
 
@@ -62,6 +68,10 @@ class WebRtcPeer(private val context: Context, private val options: WebRtcOption
      * The list of currently active connections.
      */
     private val connections: ConcurrentHashMap<String, MutableList<AbstractConnection>> = ConcurrentHashMap()
+    /**
+     * The coroutine scope.
+     */
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     //endregion
 
     init {
@@ -245,6 +255,8 @@ class WebRtcPeer(private val context: Context, private val options: WebRtcOption
         connections.clear()
 
         rtcClient.dispose()
+
+        scope.cancel()
     }
 
     /**
@@ -297,7 +309,7 @@ class WebRtcPeer(private val context: Context, private val options: WebRtcOption
             removeConnection(remotePeerId, connection)
         }
 
-        GlobalScope.launch(Dispatchers.Main) {
+        scope.launch(Dispatchers.Main) {
             try {
                 //ask to user whether to accept or deny the offer
                 val response = suspendCoroutine<Boolean> { cont ->
@@ -339,7 +351,7 @@ class WebRtcPeer(private val context: Context, private val options: WebRtcOption
             removeConnection(remotePeerId, connection)
         }
 
-        GlobalScope.launch(Dispatchers.Main) {
+        scope.launch(Dispatchers.Main) {
             try {
                 //ask to user whether to accept or deny the offer
                 val response = suspendCoroutine<Boolean> { cont ->
@@ -413,7 +425,7 @@ class WebRtcPeer(private val context: Context, private val options: WebRtcOption
      * @param block The function to execute
      */
     private fun executeOnMainThread(block: () -> Unit) {
-        GlobalScope.launch(Dispatchers.Main) {
+        scope.launch(Dispatchers.Main) {
             block()
         }
     }

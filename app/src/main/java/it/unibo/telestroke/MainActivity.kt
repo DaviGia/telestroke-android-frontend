@@ -13,14 +13,16 @@ import androidx.core.view.isGone
 import com.google.android.material.snackbar.Snackbar
 import com.google.gson.Gson
 import io.ktor.client.HttpClient
-import io.ktor.client.features.json.GsonSerializer
-import io.ktor.client.features.json.JsonFeature
+import io.ktor.client.call.body
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.request.url
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
-import io.ktor.util.KtorExperimentalAPI
+import io.ktor.serialization.gson.gson
+import it.unibo.telestroke.databinding.ActivityMainBinding
 import it.unibo.telestroke.models.DeviceConfig
 import it.unibo.telestroke.models.messages.MessageBody
 import it.unibo.telestroke.models.messages.MessageType
@@ -38,8 +40,13 @@ import it.unibo.webrtc.connection.base.Connection
 import it.unibo.webrtc.connection.base.DataConnection
 import it.unibo.webrtc.connection.base.MediaConnection
 import it.unibo.webrtc.connection.enums.RtcConnectionType
-import kotlinx.android.synthetic.main.activity_main.*
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.webrtc.Camera2Enumerator
 import org.webrtc.PeerConnection
 import kotlin.coroutines.Continuation
@@ -48,8 +55,6 @@ import kotlin.coroutines.resume
 /**
  * The main activity
  */
-@ExperimentalCoroutinesApi
-@KtorExperimentalAPI
 class MainActivity : AppCompatActivity(), WebRtcEventListener {
 
     companion object {
@@ -72,6 +77,10 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
      */
     private lateinit var config: DeviceConfig
     /**
+     * The coroutine scope.
+     */
+    private lateinit var scope: CoroutineScope
+    /**
      * The WebRTC client.
      */
     private lateinit var webRtcClient: WebRtcClient
@@ -83,6 +92,10 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
      * Determines if a reconnection is already in progress.
      */
     private var reconnecting: Boolean = false
+    /**
+     * UI binding.
+     */
+    private lateinit var binding: ActivityMainBinding
     //endregion
 
     //region Activity event handlers
@@ -90,7 +103,8 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
         Log.d(TAG, "Activity: onCreate")
         super.onCreate(savedInstanceState)
 
-        setContentView(R.layout.activity_main)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
         readConfig()
 
@@ -103,11 +117,14 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
         Log.d(TAG, "Activity: onStart")
         super.onStart()
 
+        //create coroutine scope
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
         //triggered when the app is back in foreground
         if (this::webRtcClient.isInitialized && !this.webRtcClient.connected()) {
             //disconnect from signalling server
             Log.d(TAG, "Connecting client...")
-            GlobalScope.launch(Dispatchers.Main) {
+            scope.launch(Dispatchers.Main) {
                 reconnectClient(skipInitialDelay = true)
             }
         }
@@ -121,6 +138,9 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
             Log.d(TAG, "Disposing client...")
             webRtcClient.dispose()
         }
+
+        //dispose coroutine scope
+        scope.cancel()
     }
     //endregion
 
@@ -129,6 +149,8 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
      * On request permissions result callback.
      */
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
         when (requestCode) {
             PERMISSIONS_REQUEST_CODE -> {
                 Log.d(TAG, "Received permissions request results")
@@ -160,10 +182,10 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
 
         try {
             val pi = packageManager.getPackageInfo(applicationContext.packageName, PackageManager.GET_PERMISSIONS)
-            val notGranted = pi.requestedPermissions.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+            val notGranted = pi.requestedPermissions?.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }!!
 
             //show rationale if needed
-            if (notGranted.filter { ActivityCompat.shouldShowRequestPermissionRationale(this, it) }.any()) {
+            if (notGranted.any { ActivityCompat.shouldShowRequestPermissionRationale(this, it) }) {
                 AlertDialog.Builder(this)
                     .setTitle(getString(R.string.permissions_rationale_title))
                     .setMessage(R.string.permissions_rationale_message)
@@ -226,7 +248,7 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
         } else {
             Log.e(TAG, "No camera device found")
 
-            GlobalScope.launch(Dispatchers.Main) {
+            scope.launch(Dispatchers.Main) {
                 showClosingDialog(this@MainActivity,
                     getString(R.string.alert_title_camera_not_found),
                     getString(R.string.alert_message_camera_not_found))
@@ -269,8 +291,8 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
         val baseUrl = config.backend.buildUrl()
 
         HttpClient {
-            install(JsonFeature) {
-                serializer = GsonSerializer {
+            install(ContentNegotiation) {
+                gson {
                     serializeNulls()
                     disableHtmlEscaping()
                 }
@@ -278,19 +300,19 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
         }.use {
             try {
                 //execute login
-                val response = it.post<LoginResponse> {
+                val loginResponse = it.post {
                     url("$baseUrl$LOGIN_URL")
                     contentType(ContentType.Application.Json)
-                    body = LoginRequest(config.credentials.username, config.credentials.password)
-                }
+                    setBody(LoginRequest(config.credentials.username, config.credentials.password))
+                }.body<LoginResponse>()
                 Log.d(TAG, "Logged into system")
 
                 //subscribe peer
-                it.post<Any> {
+                it.post {
                     url("$baseUrl$ADD_PEER_URL")
-                    header(AUTHORIZATION_HEADER_KEY, String.format(JWT_FORMAT, response.token))
+                    header(AUTHORIZATION_HEADER_KEY, String.format(JWT_FORMAT, loginResponse.token))
                     contentType(ContentType.Application.Json)
-                    body = AddPeerRequest(peerId, response.user.id, config.peerInfo.description)
+                    setBody(AddPeerRequest(peerId, loginResponse.user.id, config.peerInfo.description))
                 }
                 Log.d(TAG, "Added this device as available peer")
 
@@ -315,7 +337,7 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
      * Manages media connection.
      * @param connection The media connection.
      */
-    private fun manageMediaConnection(connection: MediaConnection) = GlobalScope.launch(Dispatchers.Default) {
+    private fun manageMediaConnection(connection: MediaConnection) = scope.launch(Dispatchers.Default) {
         for (track in connection.awaitVideoTracks()) {
             Log.i(TAG, "Received new remote video track: $track")
         }
@@ -325,7 +347,7 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
      * Manages data connection.
      * @param connection The data connection.
      */
-    private fun manageDataConnection(connection: DataConnection) = GlobalScope.launch(Dispatchers.Default) {
+    private fun manageDataConnection(connection: DataConnection) = scope.launch(Dispatchers.Default) {
         for (channel in connection.awaitExchanges()) {
             Log.i(TAG, "Received a new data channel (${channel.id}")
 
@@ -447,7 +469,7 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
      * @param message The message to show.
      */
     private fun changeMessageStatus(message: String) {
-        message_status.text = message
+        binding.messageStatus.text = message
     }
 
     /**
@@ -455,9 +477,9 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
      * @param visible Whether the loading progress bar should be visible or not.
      */
     private fun changeLoadingVisibility(visible: Boolean) {
-        initialization_layout.isGone = !visible
-        call_layout.isGone = visible
-        step_description.text = ""
+        binding.initializationLayout.isGone = !visible
+        binding.callLayout.isGone = visible
+        binding.stepDescription.text = ""
     }
 
     /**
@@ -494,7 +516,7 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
      * @param description The step description
      */
     private fun changeStepDescription(description: String) {
-        step_description.text = description
+        binding.stepDescription.text = description
     }
 
     /**
@@ -519,7 +541,7 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
     override fun onSignallingConnectionClosed() {
         Log.d(TAG, "Connection closed with signalling server")
 
-        GlobalScope.launch(Dispatchers.Main) {
+        scope.launch(Dispatchers.Main) {
             if (!isBusy()) {
                 changeMessageStatus(getString(R.string.message_status_connect_to_server))
                 changeLoadingVisibility(true)
@@ -538,7 +560,7 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
             connections.add(connection)
             manageMediaConnection(connection)
 
-            GlobalScope.launch(Dispatchers.Main) {
+            scope.launch(Dispatchers.Main) {
                 changeLoadingVisibility(false)
             }
         }
@@ -555,7 +577,7 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
             connections.add(connection)
             manageDataConnection(connection)
 
-            GlobalScope.launch(Dispatchers.Main) {
+            scope.launch(Dispatchers.Main) {
                 changeLoadingVisibility(false)
             }
         }
@@ -570,7 +592,7 @@ class MainActivity : AppCompatActivity(), WebRtcEventListener {
 
         //change ui if no connection is active
         if (connections.isEmpty()) {
-            GlobalScope.launch(Dispatchers.Main) {
+            scope.launch(Dispatchers.Main) {
                 changeMessageStatus(getString(R.string.message_status_wait_incoming_request))
                 changeLoadingVisibility(true)
 

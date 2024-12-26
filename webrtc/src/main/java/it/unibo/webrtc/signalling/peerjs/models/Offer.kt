@@ -29,7 +29,7 @@ data class Offer(val sdp: JsonObject,
          */
         fun buildOffer(sessionDescription: SessionDescription, type: ConnectionType, connectionId: String): Offer {
             val sdp = JsonObject()
-            sdp.addProperty(OFFER_TYPE_KEY, sessionDescription.type.name.toLowerCase(Locale.getDefault()))
+            sdp.addProperty(OFFER_TYPE_KEY, sessionDescription.type.name.lowercase(Locale.getDefault()))
             sdp.addProperty(OFFER_DESCRIPTION_KEY, sessionDescription.description)
             return Offer(sdp, type, connectionId)
         }

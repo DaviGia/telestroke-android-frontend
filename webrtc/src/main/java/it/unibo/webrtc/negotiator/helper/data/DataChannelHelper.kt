@@ -4,8 +4,13 @@ import android.util.Log
 import it.unibo.webrtc.common.Disposable
 import it.unibo.webrtc.connection.models.ExchangeDataChannel
 import it.unibo.webrtc.negotiator.helper.data.observer.DataChannelEventListener
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import org.webrtc.DataChannel
@@ -35,6 +40,10 @@ class DataChannelHelper(private val channel: DataChannel, private val listener: 
      * The channel with the incoming messages.
      */
     private val incoming: Channel<String> = Channel(Channel.UNLIMITED)
+    /**
+     * The coroutine scope.
+     */
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     //endregion
 
     init {
@@ -68,7 +77,7 @@ class DataChannelHelper(private val channel: DataChannel, private val listener: 
 
                 Log.d(TAG, "Received data from channel (${channel.id()}): $data")
 
-                if (incoming.offer(data)) {
+                if (incoming.trySend(data).isSuccess) {
                     Log.v(TAG, "Successfully offered received message to the send channel")
                 } else {
                     Log.v(TAG, "The received message couldn't be offered to the send channel")
@@ -91,7 +100,7 @@ class DataChannelHelper(private val channel: DataChannel, private val listener: 
             when(it) {
                 DataChannel.State.OPEN -> {
                     //wait incoming messages and deliver them
-                    job = GlobalScope.launch {
+                    job = scope.launch {
                         try {
                             for (message in outgoing) {
                                 handleMessage(message)
@@ -124,6 +133,8 @@ class DataChannelHelper(private val channel: DataChannel, private val listener: 
 
         channel.close()
         channel.dispose()
+
+        scope.cancel()
     }
 
     private fun handleMessage(message: String) {
