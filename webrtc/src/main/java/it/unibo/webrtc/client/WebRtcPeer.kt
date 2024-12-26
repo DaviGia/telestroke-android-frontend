@@ -3,6 +3,7 @@ package it.unibo.webrtc.client
 import android.content.Context
 import android.os.Looper
 import android.util.Log
+import androidx.core.os.persistableBundleOf
 import it.unibo.webrtc.capture.AudioController
 import it.unibo.webrtc.capture.CameraController
 import it.unibo.webrtc.capture.models.MediaOptions
@@ -225,10 +226,8 @@ class WebRtcPeer(private val context: Context, private val options: WebRtcOption
         //remove connection from list of active connections
         removeConnection(peerConnection.getRemotePeerId(), peerConnection)
 
-        //release local stream from media connection
-        rtcClient.getLocalStream()?.let {
-            peerConnection.peerConnection.removeStream(it)
-        }
+        //release tracks from media connection
+        peerConnection.peerConnection.senders.forEach { peerConnection.peerConnection.removeTrack(it) }
 
         executeOnMainThread { listener?.onConnectionClosed(peerConnection) }
     }
