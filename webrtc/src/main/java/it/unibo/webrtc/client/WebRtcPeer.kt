@@ -282,8 +282,9 @@ class WebRtcPeer(private val context: Context, private val options: WebRtcOption
         val connection = rtcClient.createConnection(rtcConfig, negotiator)
 
         //add local stream
-        rtcClient.getLocalStream()?.let {
-            connection.addStream(it)
+        rtcClient.getLocalStream()?.let { localStream ->
+            localStream.videoTracks.forEach { connection.addTrack(it) }
+            localStream.audioTracks.forEach { connection.addTrack(it) }
         } ?: Log.i(TAG, "Created new media connection without local stream")
 
         return RtcMediaConnection(remotePeerId, connection, negotiator)
